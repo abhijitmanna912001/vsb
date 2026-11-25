@@ -1,11 +1,23 @@
 #!/bin/bash
-# Boots the QNX 8.0 aarch64 image built by mkqnximage in QEMU (software
-# emulation). Usage: scripts/run-qemu.sh [path-to-mkqnximage-dir]
-# Devices are virtio-mmio, added in this order so they land in the slots the
-# QNX image expects: disk, network, random generator.
+# Boots a QNX 8.0 aarch64 image in QEMU on an Apple Silicon Mac.
+#
+# Usage: scripts/run-qemu.sh [image-dir]
+#   image-dir is the output of `mkqnximage --type=qemu --arch=aarch64le`
+#   (default: ~/qnxprojects/qnx-vm). It must contain output/ifs.bin and
+#   output/disk-qemu.
+#
+# Notes:
+#  - TCG (software emulation) is used. HVF with -cpu host fails on a GICv3
+#    assertion with this QNX image.
+#  - virtio-mmio devices (the "-device virtio-*-device" forms) are required.
+#    QNX's virtio drivers do not find PCI virtio devices on this machine.
+#  - The devices must stay in this order: block, net, rng.
+#  - Guest SSH (port 22) is forwarded to localhost:2222.
+#  - To quit QEMU: press Ctrl+A, then X.
+set -e
 DIR=${1:-$HOME/qnxprojects/qnx-vm}
 cd "$DIR"
-qemu-system-aarch64 \
+exec qemu-system-aarch64 \
   -machine virt,gic-version=3 \
   -accel tcg -cpu cortex-a57 \
   -smp 2 -m 1G \
