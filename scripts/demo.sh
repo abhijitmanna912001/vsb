@@ -3,6 +3,12 @@
 # Run inside QNX while vsbd, monitor and dashboard are running.
 P=/tmp/publisher
 
+slay heartbeat 2>/dev/null
+
+echo "== Starting heartbeat sensor"
+/tmp/heartbeat &
+sleep 3
+
 echo "== Idle"
 $P speed 0 0 100
 $P brake 0 0 100
@@ -27,5 +33,15 @@ sleep 2
 echo "== Releasing brake and stopping"
 $P brake 3 0 200
 $P speed 70 0 60
+sleep 1
+
+echo "== Sensor failure: heartbeat stops"
+slay heartbeat
+sleep 4
+
+echo "== Sensor recovered"
+/tmp/heartbeat &
+sleep 3
+slay heartbeat
 
 echo "== Demo complete"

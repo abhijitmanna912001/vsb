@@ -209,17 +209,17 @@ static int io_read_events(resmgr_context_t *ctp, io_read_t *msg,
 // A blocked subscriber was signalled (e.g. Ctrl+C). Forget it and release it.
 static int io_unblock(resmgr_context_t *ctp, io_pulse_t *msg,
                       iofunc_ocb_t *ocb) {
-  int status = iofunc_unblock_default(ctp, msg, ocb);
-  if (status != _RESMGR_DEFAULT) {
-    return status;
-  }
+  // The kernel asks us to release a client that timed out or was signalled.
+  // If it is a parked subscriber, forget it and reply EINTR.
+  // ctp->rcvid is wider than int on QNX 8.0 and Waiter::rcvid is an int,
+  // so the comparison must truncate to int.
   for (auto it = g_waiters.begin(); it != g_waiters.end(); ++it) {
-    if (it->rcvid == ctp->rcvid) {
+    if (it->rcvid == (int)ctp->rcvid) {
       g_waiters.erase(it);
-      return EINTR; // replies to the client with an interrupted error
+      return EINTR;
     }
   }
-  return _RESMGR_DEFAULT;
+  return iofunc_unblock_default(ctp, msg, ocb);
 }
 
 int main(int argc, char **argv) {

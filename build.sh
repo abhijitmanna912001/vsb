@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")"
 CXX=${CXX:-ntoaarch64-g++}
 mkdir -p build
-for p in vsbd monitor dashboard publisher; do
+for p in vsbd monitor dashboard publisher heartbeat; do
     echo "building $p"
     $CXX -O2 -Wall -o build/$p src/$p.cpp
 done
