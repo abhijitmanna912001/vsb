@@ -2,3 +2,4 @@ vsbd
 *.o
 .DS_Store
 .vscode/
+publisher
