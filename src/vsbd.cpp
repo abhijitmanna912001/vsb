@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,15 +24,21 @@ static const size_t MAX_WRITE = 255;
 // The bus state: signal name -> value.
 static std::map<std::string, std::string> g_signals;
 
+// Change tracking. g_seq counts writes; g_seq_of records, per signal, the
+// value of g_seq when it last changed.
+static uint64_t g_seq = 0;
+static std::map<std::string, uint64_t> g_seq_of;
+
 // Rendered text that read replies point at. Global on purpose: it must stay
-// alive until the library sends the reply, after io_read has returned.
+// alive until the library sends the reply, after the handler has returned.
 static std::string g_snapshot;
 
-// A subscriber waiting for the next change. We keep who asked (rcvid) and how
-// many bytes it can accept, then reply later.
+// A subscriber waiting for the next change. ocb->offset holds the last
+// sequence number that subscriber has been given.
 struct Waiter {
   int rcvid;
   size_t max_bytes;
+  iofunc_ocb_t *ocb;
 };
 static std::list<Waiter> g_waiters;
 
@@ -39,6 +46,18 @@ static std::string render_all() {
   std::string out;
   for (const auto &kv : g_signals) {
     out += kv.first + "=" + kv.second + "\n";
+  }
+  return out;
+}
+
+// Only the signals that changed after sequence number 'since'.
+static std::string render_since(uint64_t since) {
+  std::string out;
+  for (const auto &kv : g_signals) {
+    auto it = g_seq_of.find(kv.first);
+    if (it != g_seq_of.end() && it->second > since) {
+      out += kv.first + "=" + kv.second + "\n";
+    }
   }
   return out;
 }
@@ -56,13 +75,19 @@ static bool valid_name(const std::string &s) {
   return true;
 }
 
-// Reply to every blocked subscriber with one change event, then forget them.
-static void notify_waiters(const std::string &event) {
-  for (const Waiter &w : g_waiters) {
-    size_t n = (event.size() < w.max_bytes) ? event.size() : w.max_bytes;
-    MsgReply(w.rcvid, (int)n, event.data(), n);
+// Reply to every blocked subscriber that has something new, and catch it up.
+static void notify_waiters() {
+  for (auto it = g_waiters.begin(); it != g_waiters.end();) {
+    std::string text = render_since((uint64_t)it->ocb->offset);
+    if (text.empty()) {
+      ++it;
+      continue;
+    }
+    size_t n = (text.size() < it->max_bytes) ? text.size() : it->max_bytes;
+    it->ocb->offset = (off_t)g_seq;
+    MsgReply(it->rcvid, (int)n, text.data(), n);
+    it = g_waiters.erase(it);
   }
-  g_waiters.clear();
 }
 
 // ---- /dev/vsb : snapshot of all signals ------------------------------------
@@ -131,18 +156,20 @@ static int io_write(resmgr_context_t *ctp, io_write_t *msg, iofunc_ocb_t *ocb) {
     return EINVAL;
   }
 
+  g_seq++;
   g_signals[name] = value;
+  g_seq_of[name] = g_seq;
   attr.nbytes = render_all().size(); // keep ls -l size honest
 
-  // Wake every subscriber blocked on /dev/vsb_events.
-  notify_waiters(name + "=" + value + "\n");
+  // Wake every subscriber that is blocked on /dev/vsb_events.
+  notify_waiters();
 
   _IO_SET_WRITE_NBYTES(ctp, nbytes); // tell the client all bytes were taken
   ocb->attr->flags |= IOFUNC_ATTR_MTIME | IOFUNC_ATTR_CTIME;
   return _RESMGR_NPARTS(0);
 }
 
-// ---- /dev/vsb_events : blocking stream of changes --------------------------
+// ---- /dev/vsb_events : stream of changes -----------------------------------
 
 static int io_read_events(resmgr_context_t *ctp, io_read_t *msg,
                           iofunc_ocb_t *ocb) {
@@ -153,11 +180,28 @@ static int io_read_events(resmgr_context_t *ctp, io_read_t *msg,
   if ((msg->i.xtype & _IO_XTYPE_MASK) != _IO_XTYPE_NONE) {
     return ENOSYS;
   }
+  if (msg->i.nbytes == 0) {
+    _IO_SET_READ_NBYTES(ctp, 0);
+    return _RESMGR_NPARTS(0);
+  }
 
-  // Nothing to say yet: remember the client and do NOT reply.
+  // Anything this subscriber hasn't seen yet? Reply right away.
+  std::string text = render_since((uint64_t)ocb->offset);
+  if (!text.empty()) {
+    g_snapshot = text;
+    size_t n =
+        (g_snapshot.size() < msg->i.nbytes) ? g_snapshot.size() : msg->i.nbytes;
+    ocb->offset = (off_t)g_seq;
+    SETIOV(&ctp->iov[0], g_snapshot.data(), n);
+    _IO_SET_READ_NBYTES(ctp, n);
+    return _RESMGR_NPARTS(1);
+  }
+
+  // Caught up: remember the client and do NOT reply until something changes.
   Waiter w;
   w.rcvid = ctp->rcvid;
   w.max_bytes = msg->i.nbytes;
+  w.ocb = ocb;
   g_waiters.push_back(w);
   return _RESMGR_NOREPLY;
 }
@@ -208,7 +252,7 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // /dev/vsb_events: blocking stream of changes, read-only.
+  // /dev/vsb_events: stream of changes, read-only.
   iofunc_func_init(_RESMGR_CONNECT_NFUNCS, &connect_funcs, _RESMGR_IO_NFUNCS,
                    &events_io_funcs);
   events_io_funcs.read = io_read_events;

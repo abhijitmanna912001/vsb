@@ -55,9 +55,9 @@ int main() {
   printf("monitor: running, fault=%s\n", fault.c_str());
   fflush(stdout);
 
-  char buf[256];
+  char buf[1024];
   while (1) {
-    // Blocks here until vsbd replies with the next change.
+    // Blocks only if there is nothing new for us.
     ssize_t n = read(in, buf, sizeof buf - 1);
     if (n == -1 && errno == EINTR) {
       continue;
@@ -65,30 +65,39 @@ int main() {
     if (n <= 0) {
       break;
     }
-    buf[n] = '\0';
 
-    std::string line(buf);
-    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
-      line.pop_back();
-    }
-    size_t eq = line.find('=');
-    if (eq == std::string::npos) {
-      continue;
-    }
-    std::string name = line.substr(0, eq);
-    std::string value = line.substr(eq + 1);
+    // One reply may hold several "name=value" lines.
+    std::string text(buf, (size_t)n);
+    std::string last_name, last_value;
+    size_t start = 0;
+    while (start < text.size()) {
+      size_t end = text.find('\n', start);
+      if (end == std::string::npos) {
+        end = text.size();
+      }
+      std::string line = text.substr(start, end - start);
+      start = end + 1;
 
-    if (name == "fault") {
-      continue; // our own output; ignoring it avoids a feedback loop
+      size_t eq = line.find('=');
+      if (eq == std::string::npos || eq == 0) {
+        continue;
+      }
+      std::string name = line.substr(0, eq);
+      std::string value = line.substr(eq + 1);
+      if (name == "fault") {
+        continue; // our own output; ignoring it avoids a feedback loop
+      }
+      values[name] = atoi(value.c_str());
+      last_name = name;
+      last_value = value;
     }
-    values[name] = atoi(value.c_str());
 
     std::string now = evaluate(values);
     if (now != fault) {
       fault = now;
       publish(out, "fault", fault);
       printf("monitor: fault -> %s (after %s=%s)\n", fault.c_str(),
-             name.c_str(), value.c_str());
+             last_name.c_str(), last_value.c_str());
       fflush(stdout);
     }
   }
