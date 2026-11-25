@@ -6,13 +6,17 @@
 #include <unistd.h>
 #include <sys/iofunc.h> // must come before dispatch.h
 #include <sys/dispatch.h>
+#include <sys/neutrino.h>
 
+#include <list>
 #include <map>
 #include <string>
 
 static resmgr_connect_funcs_t connect_funcs;
-static resmgr_io_funcs_t io_funcs;
-static iofunc_attr_t attr;
+static resmgr_io_funcs_t io_funcs;        // handlers for /dev/vsb
+static resmgr_io_funcs_t events_io_funcs; // handlers for /dev/vsb_events
+static iofunc_attr_t attr;                // /dev/vsb
+static iofunc_attr_t attr_events;         // /dev/vsb_events
 
 static const size_t MAX_WRITE = 255;
 
@@ -22,6 +26,14 @@ static std::map<std::string, std::string> g_signals;
 // Rendered text that read replies point at. Global on purpose: it must stay
 // alive until the library sends the reply, after io_read has returned.
 static std::string g_snapshot;
+
+// A subscriber waiting for the next change. We keep who asked (rcvid) and how
+// many bytes it can accept, then reply later.
+struct Waiter {
+  int rcvid;
+  size_t max_bytes;
+};
+static std::list<Waiter> g_waiters;
 
 static std::string render_all() {
   std::string out;
@@ -43,6 +55,17 @@ static bool valid_name(const std::string &s) {
   }
   return true;
 }
+
+// Reply to every blocked subscriber with one change event, then forget them.
+static void notify_waiters(const std::string &event) {
+  for (const Waiter &w : g_waiters) {
+    size_t n = (event.size() < w.max_bytes) ? event.size() : w.max_bytes;
+    MsgReply(w.rcvid, (int)n, event.data(), n);
+  }
+  g_waiters.clear();
+}
+
+// ---- /dev/vsb : snapshot of all signals ------------------------------------
 
 static int io_read(resmgr_context_t *ctp, io_read_t *msg, iofunc_ocb_t *ocb) {
   int status = iofunc_read_verify(ctp, msg, ocb, NULL);
@@ -111,9 +134,48 @@ static int io_write(resmgr_context_t *ctp, io_write_t *msg, iofunc_ocb_t *ocb) {
   g_signals[name] = value;
   attr.nbytes = render_all().size(); // keep ls -l size honest
 
+  // Wake every subscriber blocked on /dev/vsb_events.
+  notify_waiters(name + "=" + value + "\n");
+
   _IO_SET_WRITE_NBYTES(ctp, nbytes); // tell the client all bytes were taken
   ocb->attr->flags |= IOFUNC_ATTR_MTIME | IOFUNC_ATTR_CTIME;
   return _RESMGR_NPARTS(0);
+}
+
+// ---- /dev/vsb_events : blocking stream of changes --------------------------
+
+static int io_read_events(resmgr_context_t *ctp, io_read_t *msg,
+                          iofunc_ocb_t *ocb) {
+  int status = iofunc_read_verify(ctp, msg, ocb, NULL);
+  if (status != EOK) {
+    return status;
+  }
+  if ((msg->i.xtype & _IO_XTYPE_MASK) != _IO_XTYPE_NONE) {
+    return ENOSYS;
+  }
+
+  // Nothing to say yet: remember the client and do NOT reply.
+  Waiter w;
+  w.rcvid = ctp->rcvid;
+  w.max_bytes = msg->i.nbytes;
+  g_waiters.push_back(w);
+  return _RESMGR_NOREPLY;
+}
+
+// A blocked subscriber was signalled (e.g. Ctrl+C). Forget it and release it.
+static int io_unblock(resmgr_context_t *ctp, io_pulse_t *msg,
+                      iofunc_ocb_t *ocb) {
+  int status = iofunc_unblock_default(ctp, msg, ocb);
+  if (status != _RESMGR_DEFAULT) {
+    return status;
+  }
+  for (auto it = g_waiters.begin(); it != g_waiters.end(); ++it) {
+    if (it->rcvid == ctp->rcvid) {
+      g_waiters.erase(it);
+      return EINTR; // replies to the client with an interrupted error
+    }
+  }
+  return _RESMGR_DEFAULT;
 }
 
 int main(int argc, char **argv) {
@@ -132,17 +194,31 @@ int main(int argc, char **argv) {
   resmgr_attr.nparts_max = 1;
   resmgr_attr.msg_max_size = 2048;
 
+  // /dev/vsb: default handlers, override read and write.
   iofunc_func_init(_RESMGR_CONNECT_NFUNCS, &connect_funcs, _RESMGR_IO_NFUNCS,
                    &io_funcs);
   io_funcs.read = io_read;
   io_funcs.write = io_write;
-
   iofunc_attr_init(&attr, S_IFNAM | 0666, 0, 0);
 
   id = resmgr_attach(dpp, &resmgr_attr, "/dev/vsb", _FTYPE_ANY, 0,
                      &connect_funcs, &io_funcs, &attr);
   if (id == -1) {
-    fprintf(stderr, "%s: Unable to attach name.\n", argv[0]);
+    fprintf(stderr, "%s: Unable to attach /dev/vsb.\n", argv[0]);
+    return EXIT_FAILURE;
+  }
+
+  // /dev/vsb_events: blocking stream of changes, read-only.
+  iofunc_func_init(_RESMGR_CONNECT_NFUNCS, &connect_funcs, _RESMGR_IO_NFUNCS,
+                   &events_io_funcs);
+  events_io_funcs.read = io_read_events;
+  events_io_funcs.unblock = io_unblock;
+  iofunc_attr_init(&attr_events, S_IFNAM | 0444, 0, 0);
+
+  id = resmgr_attach(dpp, &resmgr_attr, "/dev/vsb_events", _FTYPE_ANY, 0,
+                     &connect_funcs, &events_io_funcs, &attr_events);
+  if (id == -1) {
+    fprintf(stderr, "%s: Unable to attach /dev/vsb_events.\n", argv[0]);
     return EXIT_FAILURE;
   }
 
