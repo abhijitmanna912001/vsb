@@ -4,7 +4,7 @@
 
 Built for the **QNX Global Hackathon 2026**, category **Automotive & Mobility**. Runs on QNX 8.0 (aarch64), tested in QEMU.
 
-Demo video: _link to be added_
+Demo video: [https://youtu.be/ecm-An3391A](https://youtu.be/ecm-An3391A)
 
 ## Architecture
 
