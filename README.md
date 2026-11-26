@@ -60,6 +60,18 @@ The monitor publishes its result as the `fault` signal, so the dashboard and any
 - **QNX message passing** as the transport between all programs.
 - **System logger (`slogger2`)**: every fault change is also written to a `vsb` slog2 buffer set, so faults survive in the OS log and can be read with `slog2info -b vsb`.
 
+## Where QNX is used in the code
+
+| File | QNX-specific APIs and features |
+|---|---|
+| `src/vsbd.cpp` | Resource manager: `dispatch_create_channel`, `resmgr_attach` for `/dev/vsb` and `/dev/vsb_events`, `iofunc_*` handlers. `io_read_events` parks a subscriber and returns `_RESMGR_NOREPLY`; `notify_waiters` wakes it with `MsgReply`; `io_unblock` releases a client whose read timed out or was signalled. |
+| `src/monitor.cpp` | `TimerTimeout` with `_NTO_TIMEOUT_SEND` and `_NTO_TIMEOUT_REPLY` for the sensor watchdog, `pthread_setschedprio` for real-time priority, `slog2_register` and `slog2f` for the system logger. |
+| `build.sh` | QNX cross toolchain `ntoaarch64-g++`, linking `-lslog2`. |
+| `scripts/run-qemu.sh` | Boots a QNX 8.0 aarch64 image in QEMU. |
+| `scripts/test.sh`, `scripts/priority-demo.sh` | Run on the QNX target and exercise the bus, the watchdog and the scheduler. |
+
+The demo video shows the project running on QNX 8.0 in QEMU.
+
 ## Tests
 
 `scripts/run-tests.sh` deploys the build to the running QNX target and executes `scripts/test.sh` there. The test script starts its own `vsbd`, `monitor` and `heartbeat`, drives signals through `/dev/vsb` and checks the published `fault` value. It covers overspeed, hard braking (including the low-speed floor), rejection of bad input, the sensor watchdog, the priority of `SENSOR_TIMEOUT` over other faults, and recovery. It exits non-zero if any check fails. Expected result: `12 passed, 0 failed`.
@@ -84,6 +96,14 @@ These are emulated timings (QEMU software emulation on a laptop), so read them a
 - **Single-threaded server.** The bus handles one message at a time, so the signal table needs no locks.
 - **QNX 8.0 detail worth knowing.** In an unblock handler `ctp->rcvid` is wider than `int`. Comparing it with a stored `int` rcvid silently fails, so the waiter lookup must truncate to `int`. Without this the timed-out reader is never released.
 - Through the resource manager a timed-out read surfaces to the client as `EINTR` (errno 4), and the monitor accepts both `EINTR` and `ETIMEDOUT`.
+
+## Tested with
+
+| | |
+|---|---|
+| QNX version | QNX 8.0 (SDP 8.0), aarch64le |
+| Target | QEMU `virt` machine (`qemu-system-aarch64`, software emulation) on an Apple Silicon Mac, image built with `mkqnximage` |
+| Toolchain | QNX SDP 8.0 GCC cross compiler `ntoaarch64-g++`, run inside an x86_64 Ubuntu 22.04 Docker container (the SDP host tools are Linux only) |
 
 ## Build
 
