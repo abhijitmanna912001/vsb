@@ -9,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/neutrino.h>
+#include <sys/slog2.h>
 
 #include <map>
 #include <string>
@@ -25,6 +26,34 @@ static double now_s()
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+// Faults are also written to the QNX system logger. Read them with:
+//   slog2info -b vsb
+static slog2_buffer_t g_slog = NULL;
+
+static void init_slog()
+{
+    slog2_buffer_set_config_t cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.buffer_set_name = "vsb";
+    cfg.num_buffers = 1;
+    cfg.verbosity_level = SLOG2_INFO;
+    cfg.buffer_config[0].buffer_name = "monitor";
+    cfg.buffer_config[0].num_pages = 1;
+    if (slog2_register(&cfg, &g_slog, 0) == -1) {
+        perror("monitor: slog2_register");
+        g_slog = NULL;
+    }
+}
+
+static void log_fault(const std::string &fault)
+{
+    if (g_slog == NULL) {
+        return;
+    }
+    slog2f(g_slog, 0, fault == "OK" ? SLOG2_INFO : SLOG2_ERROR,
+           "fault -> %s", fault.c_str());
 }
 
 static int get_prio()
@@ -78,6 +107,8 @@ int main(int argc, char **argv)
         perror("monitor: setprio");
         return EXIT_FAILURE;
     }
+
+    init_slog();
 
     int in = open("/dev/vsb_events", O_RDONLY);
     if (in == -1) {
@@ -162,6 +193,7 @@ int main(int argc, char **argv)
         std::string now = evaluate(values, stale);
         if (now != fault) {
             fault = now;
+            log_fault(fault);
             publish(out, "fault", fault);
             if (last_name.empty()) {
                 printf("monitor: fault -> %s (no update, errno=%d)\n",

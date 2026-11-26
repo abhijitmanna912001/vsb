@@ -8,6 +8,6 @@ CXX=${CXX:-ntoaarch64-g++}
 mkdir -p build
 for p in vsbd monitor dashboard publisher heartbeat hog; do
     echo "building $p"
-    $CXX -O2 -Wall -o build/$p src/$p.cpp
+    $CXX -O2 -Wall -o build/$p src/$p.cpp -lslog2
 done
 echo "BUILD OK"

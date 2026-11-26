@@ -58,6 +58,7 @@ The monitor publishes its result as the `fault` signal, so the dashboard and any
 - **Unblock handling**: when a blocked client times out or is signalled, the kernel sends the server an unblock pulse and the server must release the client.
 - **`TimerTimeout()`**: the monitor arms a kernel timeout on its blocking read, so it wakes at least every 0.5 s even if no signal changes. This is what makes the sensor watchdog work.
 - **QNX message passing** as the transport between all programs.
+- **System logger (`slogger2`)**: every fault change is also written to a `vsb` slog2 buffer set, so faults survive in the OS log and can be read with `slog2info -b vsb`.
 
 ## Real-time priority demo
 
@@ -104,6 +105,8 @@ This cross-compiles all five programs for aarch64 into `build/`. On the Mac setu
    - Session 3: `/tmp/demo.sh`
 
 `demo.sh` runs a short drive cycle: idle, acceleration, overspeed, recovery, hard braking, then the heartbeat is killed to trigger `SENSOR_TIMEOUT`, then restarted to show recovery. Watch the monitor output and the dashboard status line change.
+
+Afterwards, `slog2info -b vsb` shows the same fault transitions with timestamps, as recorded by the OS logger.
 
 The programs are plain QNX C++ and the build target is aarch64, so the same binaries should run on other aarch64 QNX 8.0 targets such as a Raspberry Pi 5. I have only tested QEMU.
 
