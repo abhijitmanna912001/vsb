@@ -8,10 +8,10 @@ phase() {
     title=$1
     shift
     $T/monitor -s "$@" > $T/phase.out &
-    sleep 13
+    sleep ${SECS:-13}
     slay monitor
     echo "== $title"
-    tail -n 2 $T/phase.out
+    grep lateness $T/phase.out | tail -n 2
 }
 
 slay -f hog 2>/dev/null
