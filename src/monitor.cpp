@@ -1,5 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,12 +18,21 @@ static const int HARD_BRAKE_LEVEL = 3;
 static const int BRAKE_SPEED_FLOOR = 50;
 static const double HEARTBEAT_TIMEOUT_S = 2.0;
 static const uint64_t POLL_NS = 500000000ULL;   // wake every 0.5 s to check the clock
+static const double STATS_PERIOD_S = 5.0;
 
 static double now_s()
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static int get_prio()
+{
+    int policy;
+    struct sched_param sp;
+    pthread_getschedparam(pthread_self(), &policy, &sp);
+    return sp.sched_priority;
 }
 
 static void publish(int fd, const std::string &name, const std::string &value)
@@ -49,8 +60,25 @@ static std::string evaluate(const std::map<std::string, int> &v, bool heartbeat_
     return "OK";
 }
 
-int main()
+int main(int argc, char **argv)
 {
+    bool stats = false;
+    int prio = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0) {
+            stats = true;
+        } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            prio = atoi(argv[++i]);
+        } else {
+            fprintf(stderr, "usage: monitor [-s] [-p priority]\n");
+            return EXIT_FAILURE;
+        }
+    }
+    if (prio > 0 && pthread_setschedprio(pthread_self(), prio) != 0) {
+        perror("monitor: setprio");
+        return EXIT_FAILURE;
+    }
+
     int in = open("/dev/vsb_events", O_RDONLY);
     if (in == -1) {
         perror("monitor: open /dev/vsb_events");
@@ -67,18 +95,27 @@ int main()
     bool   hb_seen = false;
     double last_hb = 0.0;
 
+    // Wake-up lateness statistics (-s): how much later than 0.5 s did
+    // the timed-out read actually return?
+    double stat_start = now_s();
+    double max_late_ms = 0.0;
+    int    ticks = 0;
+
     publish(out, "fault", fault);
-    printf("monitor: running, fault=%s\n", fault.c_str());
+    printf("monitor: running, fault=%s, priority=%d\n", fault.c_str(), get_prio());
     fflush(stdout);
 
     char buf[1024];
     while (1) {
+        double t0 = now_s();
+
         // Arm a timeout on the NEXT blocking call (the read below).
         uint64_t timeout = POLL_NS;
         TimerTimeout(CLOCK_MONOTONIC, _NTO_TIMEOUT_SEND | _NTO_TIMEOUT_REPLY,
                      NULL, &timeout, NULL);
 
         ssize_t n = read(in, buf, sizeof buf - 1);
+        double t1 = now_s();
 
         std::string last_name, last_value;
         if (n > 0) {
@@ -111,8 +148,12 @@ int main()
                 last_value = value;
             }
         } else if (n == -1 && (errno == ETIMEDOUT || errno == EINTR)) {
-            // Nothing arrived within the poll period. Fall through and
-            // re-check the clock.
+            // Nothing arrived within the poll period.
+            double late_ms = (t1 - t0 - (double)POLL_NS / 1e9) * 1000.0;
+            if (late_ms > max_late_ms) {
+                max_late_ms = late_ms;
+            }
+            ticks++;
         } else {
             break;   // end of stream or a real error
         }
@@ -130,6 +171,15 @@ int main()
                        fault.c_str(), last_name.c_str(), last_value.c_str());
             }
             fflush(stdout);
+        }
+
+        if (stats && now_s() - stat_start >= STATS_PERIOD_S) {
+            printf("monitor: priority=%d, %d ticks, max wake-up lateness %.1f ms\n",
+                   get_prio(), ticks, max_late_ms);
+            fflush(stdout);
+            stat_start = now_s();
+            max_late_ms = 0.0;
+            ticks = 0;
         }
     }
 

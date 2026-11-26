@@ -59,6 +59,20 @@ The monitor publishes its result as the `fault` signal, so the dashboard and any
 - **`TimerTimeout()`**: the monitor arms a kernel timeout on its blocking read, so it wakes at least every 0.5 s even if no signal changes. This is what makes the sensor watchdog work.
 - **QNX message passing** as the transport between all programs.
 
+## Real-time priority demo
+
+QNX schedules strictly by priority, and a server inherits the priority of the client it is serving. `scripts/priority-demo.sh` shows what that buys. The monitor wakes every 0.5 s through a kernel timeout, and `monitor -s` reports how late those wake-ups are. The script measures three cases (typical output from my QEMU run):
+
+| Case | Worst-case wake-up lateness |
+|---|---|
+| Monitor at priority 10, idle CPU | 4 to 6 ms |
+| Monitor at priority 10, 3 CPU hogs running | 14 to 22 ms |
+| Monitor at priority 40 (`monitor -s -p 40`), same 3 hogs | about 2 to 3 ms |
+
+Under load the normal-priority monitor competes with the hogs and wakes late. At a higher priority it is not affected by them. Run it on the target with `vsbd` running: `/tmp/priority-demo.sh`.
+
+These are emulated timings (QEMU software emulation on a laptop), so read them as a demonstration of the scheduler's behaviour, not as real-time performance figures for hardware.
+
 ## Design notes
 
 - **No lost wake-ups.** Every write bumps a global sequence number, each signal remembers the sequence of its last change, and each subscriber's open file stores the last sequence it has seen. A read replies immediately if there are unseen changes and blocks only otherwise. An earlier version without this showed a real bug: a subscriber could miss an update that arrived between two reads, and the dashboard stayed at OK while the monitor reported HARD_BRAKE.
