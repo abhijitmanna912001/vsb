@@ -60,6 +60,10 @@ The monitor publishes its result as the `fault` signal, so the dashboard and any
 - **QNX message passing** as the transport between all programs.
 - **System logger (`slogger2`)**: every fault change is also written to a `vsb` slog2 buffer set, so faults survive in the OS log and can be read with `slog2info -b vsb`.
 
+## Tests
+
+`scripts/run-tests.sh` deploys the build to the running QNX target and executes `scripts/test.sh` there. The test script starts its own `vsbd`, `monitor` and `heartbeat`, drives signals through `/dev/vsb` and checks the published `fault` value. It covers overspeed, hard braking (including the low-speed floor), rejection of bad input, the sensor watchdog, the priority of `SENSOR_TIMEOUT` over other faults, and recovery. It exits non-zero if any check fails. Expected result: `12 passed, 0 failed`.
+
 ## Real-time priority demo
 
 QNX schedules strictly by priority, and a server inherits the priority of the client it is serving. `scripts/priority-demo.sh` shows what that buys. The monitor wakes every 0.5 s through a kernel timeout, and `monitor -s` reports how late those wake-ups are. The script measures three cases (typical output from my QEMU run):

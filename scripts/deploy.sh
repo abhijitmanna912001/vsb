@@ -13,7 +13,7 @@ $SSH 'slay -s KILL vsbd; sleep 1; slay -s KILL heartbeat; slay -s KILL monitor; 
 
 scp -i "$KEY" -P "$PORT" \
     build/vsbd build/monitor build/dashboard build/publisher build/heartbeat build/hog \
-    scripts/demo.sh scripts/priority-demo.sh root@"$HOST":/tmp/
-$SSH 'chmod +x /tmp/vsbd /tmp/monitor /tmp/dashboard /tmp/publisher /tmp/heartbeat /tmp/hog /tmp/demo.sh /tmp/priority-demo.sh'
+    scripts/demo.sh scripts/priority-demo.sh scripts/test.sh root@"$HOST":/tmp/
+$SSH 'chmod +x /tmp/vsbd /tmp/monitor /tmp/dashboard /tmp/publisher /tmp/heartbeat /tmp/hog /tmp/demo.sh /tmp/priority-demo.sh /tmp/test.sh'
 
 echo "DEPLOY OK. Start the bus on the target with: /tmp/vsbd &"
